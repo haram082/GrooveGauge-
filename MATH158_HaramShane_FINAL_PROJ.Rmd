@@ -1,0 +1,1406 @@
+---
+title: "What Makes Songs Danceable: An Analysis of Popular Tracks from 2000-2019"
+author: "Haram Yoon and Shane Foster Smith"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+
+```{r setup, include=FALSE, echo=FALSE, messages = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, messege= FALSE)
+library(dplyr)
+library(ggplot2)
+library(skimr)
+library(rsample)
+library(broom)
+library(purrr)
+library(gridExtra)
+library(stringr)
+library(caret)
+library(MASS)
+library(car)
+library(tidyverse) 
+library(GGally)
+library(forecast)
+library(glmnet)
+```
+
+```{r, echo=FALSE, messages = FALSE, warnings = FALSE}
+
+# Read in song data
+song_data <- read_csv("songs_normalize.csv", show_col_types = FALSE)
+#split data into training and testing data
+set.seed(4774)
+#spec(song_data)
+```
+
+# Introduction 
+
+##### Dataset: Paradisejoy. (n.d.). Top Hits Spotify from 2000-2019. Kaggle. Retrieved from https://www.kaggle.com/datasets/paradisejoy/top-hits-spotify-from-20002019
+
+The Spotify songs dataset contains various audio features and metadata on over 2000 popular tracks on the platform from 2000 to 2019. The primary goal of our study is to investigate the factors that influence the "danceability" of a song. Danceability is the measure of how suitable a track is for dancing based on a combination of musical elements.
+
+Our motivation behind analyzing danceability specifically from the fact that highly danceable songs tend to be more widely appreciated, particularly in certain genres like pop, electronic dance music (EDM), and hip-hop. We first thought of predicting popularity of a songs, but that soon turned out to be less feasible and valuable compared to danceability. Furthermore, danceable tracks tend to be more enjoyable for listeners due to their higher energy level, a strong rhythm, and a tempo that aligns with typical dancing speeds. These danceable tracks are espeically popular in nightclubs, parties, and other social settings.
+
+From a commercial perspective, creating danceable hits can be highly beneficial for artists and music labels. Tracks with high danceability tend to perform well on music streaming platforms which make them more likely to be added to playlists. Furthermore, danceable songs often stay popular for longer, as they remain relevant for dance-related events and activities over an extended period.
+
+By analyzing the factors that contribute to danceability, our study aims to provide insights that can guide music producers and artists in crafting more danceable tracks tailored to the preferences of their target audience. The findings could also be valuable for music streaming platforms, radio stations, and other music curators in identifying and promoting highly danceable tracks, thereby tailoring a song to a particular social setting.
+
+In this dataset, the response variable of interest is the "danceability" score, which ranges from 0 to 1, with higher values indicating more danceable tracks. The predictor variables include both numerical features related to the audio characteristics of the songs (e.g., energy, valence, tempo, acousticness, speechiness) and categorical variables like genre, mode and explicit content.
+
+The original data was collected by Spotify, a popular music streaming service, and likely consists of tracks that were popular or frequently streamed on the platform during the given time period. However, the specific details on how the data was collected and processed are not provided.
+
+The dataset includes 2000 observations (songs) and 18 variables, including the artist name, song title, duration, year of release, popularity score, and various audio features computed by Spotify's algorithms. These audio features, such as danceability, energy, valence, and acousticness, are numerical values ranging from 0 to 1 and are designed to capture different aspects of the audio content.
+
+It's worth noting that some variables in the dataset may require further processing or transformation before being included in the statistical models. For instance, the "genre" variable contains multiple genres for some songs, and the "explicit" variable is binary, indicating whether the song contains explicit content. Variables like "acousticness" and "speechiness" may also need to be explored further to understand their potential impact on danceability.
+
+Moreover, interactions between variables could be important in predicting danceability. For example, the effect of tempo on danceability might vary across different genres, or the influence of energy on danceability could be moderated by the explicit content of a song.
+
+By carefully analyzing and preprocessing these variables, as well as considering potential interactions and transformations, this analysis aims to develop effective statistical models that can accurately predict the danceability of a song based on its audio features and metadata.
+
+By analyzing this dataset, we aim to identify the key factors that contribute to a song's danceability and develop statistical models that can potentially predict this measure based on the available audio features and metadata. The findings of this analysis could provide valuable insights for music producers, artists, and streaming platforms to create and promote more danceable tracks, catering to the preferences of their audience.
+
+
+
+# Feature Engineering
+To preprocess the data, the first step is to deal with any missing or NA data. Thankfully, there was none. Our next step was to change some of the categorical variables into usable datatypes in our models (binary representations or integers rather than booleans or characters). For example, the 'Genre' feature of a song was a string that could contain one or more genres out of the 14 possible genres(such as, "pop, hip hop"). To make this feature usable in our model, we performed two operations; first, we coalesced the nine least frequency genres into a single "Other" genre, which important to ensure dimensionality reduction and because these genres were very infrequent compared to the top five most frequent genres. After, we performed a one-hot encoding of the 'Genre' feature (into 6 binary features), which indicates if a song is part of one or more genres. \
+Second, most of the original features have values in the range [0,1], but a few features had values much larger or in negative ranges. We normalized some of these features' values, while also keeping into consideration the interpretability of our models' units. For example, two of the variables we normalized where 'duration_ms' and 'loudness'. 'Duration_ms' original feature values where in the approximate range of [100000,400000] milliseconds and 'Loudness' had feature values in the approximate range of [-20,0] decibels. To normalize these values, we first determined that the original units weren't particularly informative (what really is a one dB increase of loudness? Or, why is a millisecond differnce is length important?). Instead, we decided to use the scale() function so that new units are standard deviations from the mean. How loud a song is relative to other songs in our dataset is more informative. Similarly, how long songs are relative to other songs is more informative. \
+
+# 1. Preprocessing and Handling Important Categorical Variables 
+```{r, echo=FALSE}
+# Look for Na Values -> found none so we don't need to worry about those
+na_counts <- colSums(is.na(song_data))
+#na_counts
+
+#Scale the duration, so it is closer with other feature values
+#song_data$duration_scale <- song_data$duration_ms / 100000
+song_data$duration_scale <- scale(song_data$duration_ms)[,1]
+
+#Scale loudness, interpret now in std-deviations
+song_data$loudness_scale <- scale(song_data$loudness)[,1]
+
+# Turn explicit into numeric type
+song_data$explicit_numeric <- as.numeric(song_data$explicit)
+
+#Change keys into category: either major or minor key
+song_data <- song_data %>%
+  mutate(key_numeric = case_when(
+    key == -1 ~ 0,          # unknown key
+    key %% 2 == 0 ~ 1,      # even key (C, D, ...)
+    key %% 2 == 1 ~ -1      # odd keys (C#, D#, ...)
+  ))
+
+genres_to_replace <- c("metal", "latin", "country", "Folk/Acoustic", 
+                       "World/Traditional", "easy listening", "blues", 
+                       "jazz", "classical")
+
+# GENRE ENCODING
+song_data <- song_data %>%
+  mutate(genre = str_split(genre, ",\\s*")) %>% 
+  mutate(genre = map(genre, ~if_else(. %in% genres_to_replace, "Other", .))) %>%  
+  mutate(genre = map(genre, ~unique(.))) %>% 
+  mutate(genre = map_chr(genre, paste, collapse=", "))  
+
+song_data_clean <- song_data %>%
+  mutate(genre = str_split(genre, ",\\s*")) %>%  
+  filter(!map_lgl(genre, ~"set()" %in% .)) %>%  
+  mutate(genre = map_chr(genre, paste, collapse=", ")) 
+
+
+original_song_data <- song_data_clean
+
+encoded_data <- original_song_data %>%
+  mutate(row_id = row_number()) %>% 
+  separate_rows(genre, sep = ",\\s*") %>%  # Split genres into separate rows
+  mutate(presence = 1) %>%  # Binary indicator for presence
+  pivot_wider(names_from = genre, values_from = presence, values_fill = list(presence = 0)) %>%
+  dplyr::select(-row_id)
+
+#nrow(encoded_data )
+
+
+#POPULARITY ENCODING
+encoded_data <- encoded_data %>%
+  mutate(popularity_category = cut(popularity,
+                                   breaks = c(0, 25, 50, 75, 100),
+                                   labels = c("low", "modlow", "modhigh", "high"),
+                                   right = FALSE))
+
+encoded_data <- encoded_data %>%
+  pivot_wider(names_prefix = "popularity_",
+              names_from = popularity_category,
+              values_from = popularity_category,
+              values_fill = list(popularity_category = 0), 
+              values_fn = list(popularity_category = function(x) 1)) 
+
+encoded_data <- encoded_data %>%
+  mutate(across(starts_with("pop_"), as.integer))
+
+```
+
+
+```{r, echo=FALSE}
+# Dancebility on Genre
+original_song_data %>%
+  separate_rows(genre, sep = ",\\s*") %>%  # Split genres into separate rows based on comma
+  ggplot(aes(x = danceability)) +           
+  geom_histogram(bins = 30, fill = "steelblue", color = "black") +  
+  facet_wrap(~genre, scales = "free_y") +  # Create separate plots for each genre
+  labs(
+       x = "Danceability",
+       y = "Count") +
+  theme_minimal() +
+  ggtitle("Figure 1: Danceability Distribution by Genre")
+
+```
+By observation of the \textbf{Figure 1}, it appears that the frequency of danceability does slightly vary depending on the genre. For example, 'rock' and 'Other' peaks (or means) are slightly lower in the histograms than they are for 'Dance/Electronic' and 'Hip Hop'. Also, for 'Pop' and 'R&B', we can see that their songs are more frequenty in the [0,0.5] danceability range than songs in ''Dance/Electronic' and 'Hip Hop'. These results indicate that dance/electronic and hop hip songs may be considered more danceable, and perhaps deserve special consideration in our models.
+
+## Genre Counts
+```{r top-genres-plot, fig.width=6, fig.height=4}
+original_song_data %>% 
+  separate_rows(genre, sep = ",\\s*") %>%
+  filter(genre != "set()") %>%
+  count(genre) %>%
+  slice_max(n, n = 6) %>%
+  ggplot(aes(x = fct_reorder(genre, n), y = n)) +
+  geom_col() +
+  labs(
+    title = "Figure 2: Count of Genres in Data Set",
+    x = "Genre",
+    y = "Count"
+  )
+
+```
+\textbf{Figure 2} shows 'pop' as the most represented genre in the dataset, followed closely by 'hip hop'. Given the prominence of these highly danceable genres, the dataset is well-suited for analyzing the factors contributing to danceability across different musical styles. Furthermore, most of the songs in our data set are considered to be 'pop' (which makes sense, as this is data set of popular songs from 2000-2019) and lots of songs are considered to be pop \textit{and} some other genre.
+
+## Popularity
+```{r, echo=FALSE}
+# Model 9: Danceability vs Popularity:
+title_pop <- "Danceability vs Popularity)"
+rapped_pop<- paste(strwrap(title_pop, width = 20), collapse = "\n")
+
+ggplot(encoded_data, aes(x = popularity)) +
+  geom_histogram(binwidth = 5, fill = "blue", color = "black") +
+  ggtitle("Figure 3: Histogram of Popularity") +
+  xlab("Popularity") +
+  ylab("Frequency")
+
+
+```
+Popularity, as seen above, is binomially split between songs that have 0 or close to 0 popularity and those who have moderate to high popularity. Due to this fact, and because we found that the values of popularity weren't very correlated with our response, we decided perform a one hot encoding of popularity (aka. popularity is now a categorical variable, represented by four binary features: low popularity [0,25), moderate-low popularity [25, 50), moderate_high [50,75) and high popularity [75,100]).
+
+# 2.Correlation of Potential Predictors
+```{r, echo=FALSE, warning=FALSE, messages=FALSE}
+library(viridis)
+cor_mat <- cor(encoded_data %>% 
+                select_if(is.numeric))
+
+library(reshape2)
+melted_cor <- melt(cor_mat) %>%
+              filter(!(Var1 %in% c("key_numeric", "loudness", "duration_ms", "year", "key", "popularity_low", "popularity_high", "popularity_modlow", "popularity_modhigh")),
+       !(Var2 %in% c("key_numeric", "loudness", "duration_ms", "year", "key", "popularity")))
+
+# Plot heatmap
+ggplot(data = melted_cor, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_viridis(option = "cividis")  +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(
+    title="Figure 4: Correlation Heatmap",
+    x = "Variable 1",
+    y = "Variable 2"
+  ) 
+
+#colnames(encoded_data)
+```
+This plot shows the correlation between each numeric variable in our dataset (as a matrix heatmap). The darker colors show negative correlation while the warmer colors (more yellow) show more positive correlation. We can see that many variable in the heatmap are notably correlated (either positively or negatively) . \
+For example, the variable 'Energy' is positively correlated with loudness and very negatively correlated what acoustiness. Futhermore, loudess and acoustiness, unsurprisingly, are also very negative correlated. So, to avoid multicollinearity, we likely don't want to put more than one of these variables in our model without careful consideration. \
+Another example is, 'Speechiness', 'Explicit_numeric', and 'Hip Hop' are all positively correlated. This makes intuitive sense as we expect hip hop to be more 'wordy' and likely contain more explicit language. Again, we have to be careful with including more than one of these variables in a model, considering their correlation.
+Surprisingly, the popularity variables do not appear to be very correlated with any of the other variables.
+
+To get a closer understanding of the correlations and relationships of our variables, we constructed a few pairs plots and considered some transformations of our variables. \
+
+```{r, echo=FALSE}
+
+```
+
+## Pairs Plots
+```{r, echo=FALSE}
+
+# min_value <- min(encoded_data$duration_scale)
+# max_value <- max(encoded_data$duration_scale)
+# print(min_value)
+# print(max_value)
+
+#DATA TRANSFORMATIONS (Explanataion will come later in the report)
+encoded_data$log_speechiness<- log(encoded_data$speechiness)
+
+encoded_data$valence_square<- (encoded_data$valence)^2
+
+encoded_data$log_liveness<- log(encoded_data$liveness)
+
+encoded_data$log_acousticness<- log(encoded_data$acousticness, base = 2)
+
+encoded_data$sqrt_instrumentalness<- (encoded_data$instrumentalness)^(1/4)
+
+encoded_data$danceability_square <- (encoded_data$danceability)^2
+encoded_data$energy_square <- (encoded_data$energy)^2
+
+root1 <- function(x) {
+  sign(x) * abs(x)^(1/1.414)
+}
+preProc <- preProcess(encoded_data[, "duration_scale", drop = FALSE], method = "YeoJohnson")
+new_duration <- predict(preProc, encoded_data[, "duration_scale", drop = FALSE])
+encoded_data$yeo_duration <- unlist(new_duration)
+encoded_data$root_duration <- sapply(encoded_data$duration_scale, root1)
+
+# Set a small value for zero entries that will not result in -Inf or NaN
+epsilon <- 1e-15
+encoded_data$adjusted_instrumentalness <- ifelse(encoded_data$instrumentalness == 0, epsilon, encoded_data$instrumentalness)
+encoded_data$loglog_instrumentalness <- log(-log(1 - encoded_data$adjusted_instrumentalness))
+
+# SPLIT DATA for cross-validation, model builging and future predictions
+song_split <- initial_split(encoded_data, prop = .90)
+song_train <- training(song_split)
+song_test <- testing(song_split)
+
+original_train1 <- song_train
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+ggpairs(song_train, columns = c("danceability", "acousticness", "liveness", "speechiness", "energy"), 
+        title = "Figure 5a: Pairwise Plot of Song Features",
+        upper = list(continuous = wrap("cor", size = 4)),
+        lower = list(continuous = wrap("smooth", method = "lm", color = "blue", se = TRUE)))
+
+ggpairs(song_train, columns = c("danceability", "valence", "energy_square", "log_acousticness", "log_liveness", "log_speechiness", "loudness_scale"), 
+        title = "Figure 5b: Pairwise Plot of Song Characteristics 2 (with Transformations)",
+        upper = list(continuous = wrap("cor", size = 4)),
+        lower = list(continuous = wrap("smooth", method = "lm", color = "blue", se = TRUE)))
+
+
+ggpairs(song_train, columns = c("danceability", "duration_scale", "tempo"),
+        title = "Figure 5c: Pairwise Plot of Song Characteristics 3",
+        upper = list(continuous = wrap("cor", size = 4)),
+        lower = list(continuous = wrap("smooth", method = "lm", color = "blue", se = TRUE)))
+
+```
+From the pairs plots, it's evident that danceability exhibits varying degrees of correlation with several audio features. Notably, it shows moderate positive correlations with valence (0.4) and log_speechiness (0.208), suggesting that higher danceability tends to be associated with higher valence and speechiness levels, respectively. Conversely, danceability demonstrates weak negative correlations with variables such as acousticness (-0.078), energy (-0.1), and tempo (-0.184), implying that higher danceability may be associated with lower acousticness, energy, and tempo values. However, the correlations with loudness_scale, duration_scale, sqrt_instrumental, and popularity appear to be negligible, indicating minimal linear relationships between these variables and danceability. Even though certain variables exhibit negligible correlations with danceability, it's important to still consider them for model building due to their potential non-linear relationships, contextual importance, and role in mitigating multicollinearity to help create a more comprehensive understanding of the factors influencing danceability. Furthermore, we see evidence of non-constant variance, non-linearity and possible violations of the assumption of normal errors for certain predictors (in particular, look at first pair-wise plot of characteristics).
+
+
+# 3. Transformations:
+In our analysis, we applied logarithmic and square root transformations to certain variables to address the conditions of a normal model. These transformations helped to stabilize the variance of residuals and achieve a more symmetric distribution, thereby enhancing the adherence of our models to the assumptions of linear regression. Through these transformations, we aimed to improve the reliability and interpretability of our regression analyses.
+
+
+## No Transformations
+```{r, echo=FALSE}
+
+# Confirm transformations / which predictors aren't following the normal errors model?
+#(consider lm(danceability ~ some_variable)) residual plots to find out. Look for non-constant variace and non-normal errors especialy
+
+
+# Model 1: Danceability vs Valence
+m1 <- lm(danceability ~ valence, data = song_train)
+
+# Set up a 2x2 layout for plots
+par(mfrow = c(2, 2))
+
+# Plot diagnostics for each model
+plot(m1, main = "Danceability vs Valence")
+```
+
+In cases where variables meet the model conditions based on diagnostic plots, such as with valance, seen above, transformations are not necessary as the assumptions of linearity, normality, and constant variance are adequately satisfied. Therefore, applying transformations to these variables may introduce unnecessary complexity (while also losing interpretability) without yielding significant improvement in model performance. \
+However, most of our continuous variable did require transformations in order to meet the normal errors model assumptions.
+
+
+## Log Transformations
+```{r, echo = FALSE}
+
+# Model 3: Danceability vs Liveness
+m3 <- lm(danceability ~ liveness, data = song_train)
+
+# Model 4: Danceability vs Log_Liveness
+m4 <- lm(danceability ~ log_liveness, data = song_train)
+
+# Model 5: Danceability vs Acousticness
+m5 <- lm(danceability ~ acousticness, data = song_train)
+
+# Model 6: Danceability vs Log_Acousticness
+m6 <- lm(danceability ~ log_acousticness, data = song_train)
+
+# Model 7: Danceability vs Speechiness
+m7 <- lm(danceability ~ speechiness, data = song_train)
+
+# Model 8: Danceability vs Log_Speechiness
+m8 <- lm(danceability ~ log_speechiness, data = song_train)
+
+
+# Model new: Danceability vs Instrumentalness
+mn1 <- lm(danceability ~ instrumentalness, data = song_train)
+mn2 <- lm(danceability ~ loglog_instrumentalness, data = song_train)
+min_x1 <- min(fitted(mn1)[song_train$instrumentalness > 0])
+max_x1 <- max(fitted(mn1))
+min_x2 <- min(fitted(mn2)[song_train$instrumentalness > 0])
+max_x2 <- max(fitted(mn2))
+par(mfrow = c(2, 2))
+plot(m3, main = "Danceability vs Liveness")
+plot(m4, main = "Danceability vs Log_Liveness")
+plot(m5, main = "Danceability vs Acousticness")
+plot(m6, main = "Danceability vs Log_Acousticness")
+plot(m7, main = "Danceability vs Speechiness")
+plot(m8, main = "Danceability vs Log_Speechiness")
+plot(mn1, which = 1, main = "Danceability vs Instrumentalness", xlim = c(min_x1, max_x1))
+plot(mn2, which = 1, main = "Danceability vs LogLog_Instrumentalness", xlim = c(min_x2, max_x2))
+```
+
+We encountered skewed distributions (both left and right), non-linearity, and heteroscedasticity in many of the predictor variables, as evidenced by the diagnostic plots above. To address these issues, we opted to apply a logarithmic transformation to these variables. After completing the transformations, we observed a marked improvement in the diagnostic plots; the previously skewed residual vs. fitted plots now display distributions that have a more uniform variance and linear relationship with the response variable. However, some of the residual plots still looked slighly quadtradic, which we will address later in this paper. In summary, the logarithmic transformation of skewed predictor variables yielded significant improvements in the linearity and homoscedasticity of our regression models, thereby enhancing the inference and predictive capabilities of these variables in a linear model.
+
+
+## Quadratic Transformations
+```{r echo=FALSE}
+
+
+#AUTOMATIC FOR MANY PREDICTORS: this example, studentized residuals for many predictors
+# can change predictors in lists and type of residual plot
+predictors1 <- c("duration_scale", "yeo_duration", "energy", "energy_square")
+
+results <- map(predictors1, function(pred) {
+  model <- lm(paste("danceability ~", pred), data = song_train)
+  
+  diagnostics2 <- augment(model) %>%
+    mutate(studentized_res = rstudent(model))
+  
+  # Create the plot
+  p <- ggplot(diagnostics2, aes(x = .fitted, y = studentized_res)) +
+    geom_point() +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    geom_hline(yintercept = c(-2, 2), col = "red", linetype = "dashed") +
+    labs(title = paste("Studentized Residuals vs Fitted Values for", pred),
+         x = "Fitted Values", y = "Studentized Residuals")
+  
+  # Print the plot explicitly
+  print(p)
+})
+```
+We improved the linearity and constant variance of the 'duration_scale' predictor ...
+Also, the previous residuals vs fitted values for the 'energy' predictor looked slightly quadtradic, and we confirmed this suspicion by looking at the studentized residuals vs fitted values plots. As seen above, when we don't square 'energy', the studentized residuals heavily favor the fitted values far below the mean (rather than above the mean), especially for large fitted values; this indicates non-linearity. When we look at the same plot, but for a linear model that squares 'energy', we see that there is still a bias towards fitted values below the mean, but it is reduced and there is an improvement in constant variance. \
+Even after many of the previous transformations on the predictors, we still noticed a bias toward studentized residuals below the mean (sometimes more than 2 standard deviations). Therefore, we decided to transform the response variable, 'danceability', into a quadtradic term. Below, you will see various studentized residuals vs fitted values plots that show further improvements to various predictors when we transform 'danceability' to a squared term (in terms of constant variance, linearity, and, in particular, normal errors). \
+Although transforming the response variable in this way makes the interprebility of our model more nuanced, the studentized residual plots show that this tradeoff is acceptable due to the significant improvement in the assumptions of a normal errors model. With these transformation, we feel more confident in the validity of the inference and predictions we perform later in this paper. \
+
+
+```{r fig.height=4, fig.width=7, echo = FALSE, message=FALSE, warning=FALSE}
+
+predictors2<- c("energy_square")
+results2 <- map(predictors2, function(pred) {
+  model <- lm(paste("danceability_square ~", pred), data = song_train)
+  
+  diagnostics2 <- augment(model) %>%
+    mutate(studentized_res = rstudent(model))
+  
+  # Create the plot
+  p <- ggplot(diagnostics2, aes(x = .fitted, y = studentized_res)) +
+    geom_point() +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    geom_hline(yintercept = c(-2, 2), col = "red", linetype = "dashed") +
+    labs(title = paste("Studentized Residuals vs Fitted Values for", pred, "(Danceability Squared Response)"),
+         x = "Fitted Values", y = "Studentized Residuals")
+  
+  print(p)
+})
+
+predictors3<- c( "valence","log_acousticness", "log_liveness", "log_speechiness")
+results4 <- map(predictors3, function(pred) {
+  model <- lm(paste("danceability ~", pred), data = song_train)
+  model2 <- lm(paste("danceability_square ~", pred), data = song_train)
+  
+  diagnostics2 <- augment(model) %>%
+    mutate(studentized_res = rstudent(model))
+  
+  diagnostics3 <- augment(model2) %>%
+    mutate(studentized_res = rstudent(model2))
+  
+  # Create the plot
+  p <- ggplot(diagnostics2, aes(x = .fitted, y = studentized_res)) +
+    geom_point() +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    geom_hline(yintercept = c(-2, 2), col = "red", linetype = "dashed") +
+    labs(title = str_wrap(paste("Studentized Residuals vs Fitted Values for", pred), width = 40),
+         x = "Fitted Values", y = "Studentized Residuals") +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 12))
+  
+  # Create the plot
+  p2 <- ggplot(diagnostics3, aes(x = .fitted, y = studentized_res)) +
+    geom_point() +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    geom_hline(yintercept = c(-2, 2), col = "red", linetype = "dashed") +
+    labs(title = str_wrap(paste("Studentized Residuals vs Fitted Values for", pred, "(Danceability^2)"), width = 40),
+         x = "Fitted Values", y = "Studentized Residuals") +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 12))
+  
+  invisible(grid.arrange(p, p2, ncol = 2, widths = c(1.5, 1.5), heights = c(1.25, 1.25)))
+})
+
+print(results4)
+```
+
+## Yeo-Johnson Transformations 
+For the predictor 'duration_scale', we tried a variety of log, inverse and quadtric transformations for the purpose of stabilizing its variance (see figure ...) . However, we found that none of these methods worked as intended. Therefore, we decided to do some research into other types of transformation that may be able to help us. A Yeo-Johnson Transformation is an extension of the Box-Cox transformation; Yeo-Johnson can handle feature values, while Box-Cot transformations can't. This type of transformation is very useful for stabilizating the variance of a predictor. Information found at (https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9118124/).
+
+```{r, echo=FALSE}
+# Model 7: Danceability vs Speechiness
+m_dur <- lm(danceability_square ~ duration_scale, data = song_train)
+
+# Model 8: Danceability vs Log_Speechiness
+m_yeo <- lm(danceability_square ~ yeo_duration, data = song_train)
+
+predictors4 <- c("duration_scale", "yeo_duration")
+results5 <- map(predictors4, function(pred) {
+  model2 <- lm(paste("danceability_square ~", pred), data = song_train)
+  
+  
+  diagnostics3 <- augment(model2) %>%
+    mutate(studentized_res = rstudent(model2))
+  
+  
+  # Create the plot
+  p2 <- ggplot(diagnostics3, aes(x = .fitted, y = studentized_res)) +
+    geom_point() +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    geom_hline(yintercept = c(-2, 2), col = "red", linetype = "dashed") +
+    labs(title = str_wrap(paste("Studentized Residuals vs Fitted Values for", pred, "(Danceability^2)"), width = 40),
+         x = "Fitted Values", y = "Studentized Residuals") +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 12))
+  
+  invisible(grid.arrange(p2, ncol = 1))
+})
+
+print(results5)
+```
+Although the improvement isn't drastic, this transformation help us stabilize the importance of the outlying observations, especially the shorter duration observations. \
+
+# 4. Comparing Two Naive Models
+With the previous analysis of the relationships in our model, and with various domain knowledge, we constructed two models we thought would explain dancebility well without introducing too much multicollinearity or overfitting. Consider the two models below shown below.
+For both models, we determined that the variables 'valence','energy_square' and 'log_liveness' were all correlated enough with 'danceability' to always be included in the models. We also determined that the categorical variable 'Dance/Eletronic' should also be included for both models (given the name and previous histograms).\
+For the first model, we decided to focus more on tempo, genre and instrumentalness. This is an intuitive approach to modeling danceability; people usually dance to songs with a strong beat and/or groove in the instrumentation, and these features are common in certain genres. Furthermore, we predicted tempo would become very important for 'Dance/Eletronic' songs in terms of predicting danceability (rather than for genres such as rock or jazz). We added an interaction term to reflect these hypothesises. \
+
+The second model focuses more on the speechiness and language of a song. We hypothesized that very wordy songs would be less danceable (similar to the opposite of instrumentalness). Furthermore, we hypothesized that explicit language would decrease the effects of valance  perceived danceability of a song, as much of the perceived valence of song comes from the language itself; we included two interaction terms to reflect this hypothesis. Also, we should note that, given we included speechiness (and explicit language) in the second model, we removed the categorical variable 'hip hop' and `rock` to avoid multicollinearity.
+
+
+```{r, echo=FALSE}
+model_dance1 <- lm(danceability_square ~ valence + energy_square + log_liveness + loglog_instrumentalness + `Dance/Electronic` + `hip hop` + `rock` +   tempo*`Dance/Electronic`, data = song_train)
+
+model_dance2 <- lm(danceability_square ~ valence + energy_square + log_liveness + log_speechiness + `Dance/Electronic` + explicit_numeric + explicit_numeric*valence , data = song_train)
+
+summary(model_dance1)
+summary(model_dance2)
+
+```
+
+
+We wanted to check for multicollinearity and any leverage or influence points using these 2 models as an overall insight for any future models as well.
+
+```{r, echo=FALSE}
+model_dance1 %>% car::vif()
+
+```
+Multicollinearity varies across variables in the model after calculating the Variance Inflation Factor (VIF). While Valence, Energy Square, Log Liveness, and Sqrt Instrumentalness show low to very low levels, Dance/Electronic and Hip Hop, along with their interaction terms with Tempo, exhibit potential high multicollinearity. This suggests redundancy or strong correlation, potentially affecting model stability and interpretation. 
+
+```{r, echo=FALSE}
+model_dance2 %>% car::vif()
+```
+In this case, Valence, Energy Square, Log Liveness, Dance/Electronic and Log Speechiness show low to very low levels, Energy Square and Valence along with their interaction terms with Explicit Numeric show medium levels, and with Explicit_Numeric to cause a little concern for multicollinearity.
+
+Afterward, we plotted an influence plot for each model to pinpoint Cook's distance and leverage points to uncover leverage or influential points that could influence the regression model's coefficients. This method helps us understand the model's reliability by highlighting potential outliers and assessing their impact.
+
+```{r, echo=FALSE}
+threshold <- 2 * (ncol(song_train) + 1) / nrow(song_train)
+threshold
+```
+
+```{r, echo=FALSE}
+# For model_dance1
+car::influencePlot(model_dance1, main = "Influence Plot for Model Dance 1")
+
+plot(model_dance1, which = 4)  # Cook's distance plot
+abline(h = 4 / nrow(song_train), lty = 2) 
+```
+
+The influence plot revealed a small handful of observations with leverage values greater than twice the average leverage $(2 \times (k + 1) / n) = 0.047$ (chirp chirp), where k is the number of predictors and n is the number of observations. These observations can be considered high leverage points. There are unfortunate a small number that passed this threshold within our first model, indicating leverage points. However, when examining the Cook's distance plot, none of the observations had a Cook's distance value greater than 1, which is a common threshold for identifying influential observations.
+
+
+```{r, echo=FALSE}
+# For model_dance2
+car::influencePlot(model_dance2, main = "Influence Plot for Model Dance 2")
+
+plot(model_dance2, which = 4) 
+abline(h = 4 / nrow(song_train), lty = 2) 
+```
+
+The influence plot did not reveal any observations with high leverage values exceeding twice the average leverage.
+Similarly, the Cook's distance plot did not show any observations with a Cook's distance value greater than 1.
+
+In summary, while model_dance1 had a few high leverage points identified through the influence plot, neither model exhibited observations with substantial influence based on the Cook's distance criterion. This suggests that, although there are some high leverage points in model_dance1, they may not be significantly influencing the regression coefficients or model fit. However, it's still recommended to investigate these high leverage points further and consider their potential impact on the model. These are most likely not the exact models we will be using, so it is a bright sign for building a more concise model later.
+
+
+
+Then, we performed a 10-fold cross validation of our data to evaluate how well each model performs on unseen data. \
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+
+na_counts <- colSums(is.na(song_train))
+#na_counts
+
+train_control <- trainControl(
+  method = "cv",
+  number = 10,   # folds
+  savePredictions = "final",  
+  returnResamp = "all"  
+)
+
+model_dance1_cv <- train(danceability_square ~ valence + energy_square + log_liveness + loglog_instrumentalness + `Dance/Electronic` + tempo*`Dance/Electronic` + tempo*`hip hop`,
+                         data = song_train,
+                         method = "lm",
+                         trControl = train_control)
+
+model_dance2_cv <- train(danceability_square ~ valence + energy_square + log_liveness + log_speechiness + explicit_numeric  + rock + `Dance/Electronic` + `Dance/Electronic`*pop + explicit_numeric*valence,
+                         data = song_train,
+                         method = "lm",
+                         trControl = train_control)
+
+
+print(model_dance1_cv)
+print(model_dance2_cv)
+
+```
+As seen above, the models performed comparably in terms of RMSE (Root Mean Squared Error), R-Squared, and MAE in a 10 fold cross validation test with the training data. The second model appears to perform marginally better in each of the outputted metrics, thus indicating that the second model performs slightly better for predicting unseen data. This may indicate that language and genre feature are marginally more important for modeling danceability than instrumentation and tempo features.
+
+
+
+# 5. Model Building 
+## BIC Selection (Forward Stepwise vs Backwards)
+We then considered a two different models built with Backwards BIC Selection and Forwards Stepwise BIC Selection. Since we are considering so many different variables and interaction terms in our model, we determined BIC was appropriate criterion for the purpose of penalizing overly complex models. Furthermore, many the predictors in our data set are correlated, therefore less complex models also helps us avoid issues with multicollinearity. \
+Consider the output models from each of these selection processes. \
+```{r, echo =FALSE}
+# Adding interaction terms of interest manually
+song_train$energy_square_explicit_numeric <- song_train$energy_square * song_train$explicit_numeric
+song_train$valence_explicit_numeric <- song_train$valence * song_train$explicit_numeric
+song_train$DanceElectronic_pop <- song_train$`Dance/Electronic` * song_train$pop
+song_train$DanceElectronic_rock <- song_train$`Dance/Electronic` * song_train$rock
+song_train$DanceElectronic_tempo <- song_train$`Dance/Electronic` * song_train$tempo
+song_train$hiphop_tempo <- song_train$`hip hop` * song_train$tempo
+song_train$DanceElectronic_hiphop <- song_train$`hip hop` * song_train$`Dance/Electronic`
+
+song_test$energy_square_explicit_numeric <- song_test$energy_square * song_test$explicit_numeric
+song_test$valence_explicit_numeric <- song_test$valence * song_test$explicit_numeric
+song_test$DanceElectronic_pop <- song_test$`Dance/Electronic` * song_test$pop
+song_test$DanceElectronic_rock <- song_test$`Dance/Electronic` * song_test$rock
+song_test$DanceElectronic_tempo <- song_test$`Dance/Electronic` * song_test$tempo
+song_test$hiphop_tempo <- song_test$`hip hop` * song_test$tempo
+song_test$DanceElectronic_hiphop <- song_test$`hip hop` * song_test$`Dance/Electronic`
+
+# Selecting the predictors and interaction terms
+predictors_interest <- c("valence", "hip hop", "energy_square", "rock", "explicit_numeric", "Dance/Electronic", "pop", "mode", "log_speechiness",
+                "loglog_instrumentalness", "tempo", "log_liveness", "yeo_duration",
+                "energy_square_explicit_numeric", "valence_explicit_numeric", 
+                "DanceElectronic_pop", "DanceElectronic_rock", "DanceElectronic_tempo", "hiphop_tempo", "DanceElectronic_hiphop")
+
+premodel <- lm(danceability_square ~ ., data = song_train[, c("danceability_square", predictors_interest)])
+
+
+#sum(is.na(song_train[predictors_interest]))
+
+splitIndex <- caret::createDataPartition(song_train$danceability_square, p = 0.9, list = FALSE)
+
+# Create training and test datasets
+final_train_data <- song_train[splitIndex, ]
+final_develop_data <- song_train[-splitIndex, ]
+
+# x_train <- as.matrix(final_train_data[predictors_interest])
+# y_train <- final_train_data$danceability_squared
+
+# Prepare predictors from test data =
+x_test <- as.matrix(final_develop_data[predictors_interest])
+y_test_square <- final_develop_data$danceability_square
+y_test_linear <- final_develop_data$danceability
+
+#TRAIN
+x_train <- as.matrix(song_train[predictors_interest])
+y_train <- song_train$danceability_square
+```
+
+```{r, echo = FALSE}
+#ERROR CHECK
+nrow(song_train)
+na_count_per_column <- sapply(song_train, function(x) sum(is.na(x)))
+print(na_count_per_column)
+```
+
+```{r, echo=FALSE}
+### USEFUL function
+get_stats <- function(model) {
+  stats <- summary(model)
+  sse <- sum(stats$residuals^2)
+  df_residuals <- stats$df[2]
+  df_total <- df_residuals + stats$df[1]
+
+  aic_val <- AIC(model)
+  bic_val <- BIC(model)
+
+  adj_r_squared <- stats$adj.r.squared
+
+  n <- nrow(model$model)
+  p <- length(model$coefficients)
+  mse <- sse / df_residuals
+  cp <- (sse / mse) - (n - 2 * p)
+  
+  return(c(AIC = aic_val, BIC = bic_val, Adjusted_R2 = adj_r_squared, Cp = cp))
+}
+# names(song_train)
+# test_model <- lm(danceability ~ valence, data = song_train)
+# summary(test_model)
+
+empty_model <- lm(danceability_square ~ 1, data = song_train)
+
+full_model1 <- 
+  lm(danceability_square ~ valence + energy_square +  log_liveness + log_speechiness + log_acousticness + loglog_instrumentalness + yeo_duration + 
+      `Dance/Electronic` + `hip hop` + `pop` + `R&B` + rock + Other + tempo + mode + popularity_high + popularity_low + popularity_modlow + popularity_modhigh +
+      tempo * `Dance/Electronic` + tempo * `hip hop` + explicit_numeric * energy_square + explicit_numeric * valence + explicit_numeric * `Dance/Electronic` + explicit_numeric*`hip hop` + mode*`hip hop` + mode*`Dance/Electronic` + `Dance/Electronic`*pop + `Dance/Electronic`*`hip hop` + `Dance/Electronic`*`R&B` + `Dance/Electronic`*Other + `Dance/Electronic`*rock ,
+                 data = song_train)
+
+#sum(is.na(song_train)) 
+
+backselect <- stepAIC(full_model1, direction = "back", trace = FALSE, k = log(nrow(song_train)))
+
+summary(backselect)
+
+#Both Select BIC
+bothselect_BIC <- stepAIC(empty_model,
+                       scope = list(lower = empty_model, upper = full_model1),
+                       direction = "forward",
+                              trace = FALSE,
+                              k = log(nrow(song_train)))
+summary(bothselect_BIC)
+
+backselect_stats <- get_stats(backselect)
+bothselect_BIC_stats <- get_stats(bothselect_BIC)
+
+comparison_df <- data.frame(
+  Metric = c("AIC", "BIC", "Adjusted R^2", "Cp"),
+  Backward_Selection = as.numeric(backselect_stats),
+  Both_Direction_Selection = as.numeric(bothselect_BIC_stats)
+)
+print(comparison_df)
+```
+
+Now, let's consider the intuition behind some of the values of our coefficients. Continuous variables such as 'valance', 'instrumentalness', and indicator variables such as 'Dance/Electronic', 'hip hop' and explict langage improve the danceability of songs according to this model. We believe this result to be consistent with our domain knowledge; we initially expected that more positive sounding, instrumental songs would more danceable and we also expected that Dance/Electronic and hip hop music would also be perceived as more danceable. Furthermore, songs with explicit language are more common in social setting where people dance (such as bars and clubs), so more danceable music may be produced with explict language more often. \
+Increases in energy, liveness, tempo and all of our interaction terms, on the other hand, decrease the expected danceability (squared) of a song. Although liveness decreasing danceability isn't particularly surprising (songs we dance to, especially in hip hop and eletronic music, usually aren't recorded live), energy decreasing danceability was a little suprising to us. We suspect that songs with too much energy are too intense to dance to properly. Our tempo coefficient, and interaction term with tempo, indicate that lower tempos are more conducive to dancing, and that, when a song is Dance/Electronic, higher tempos hurt the dancebility of the song more than for other genres. The two interaction terms involving *explicit_numeric* indicate that the positive effect of valence on danceability is diminished in the presence of explicit language. Additionally, explicit language amplifies the negative impact of high energy (squared) on danceability. \
+\
+As seen above, the second model (found with Forward Stepwise BIC) has better criteria metric for BIC and *C_p*. Based on these metrics, we determined that the Forward Stepwise BIC model would likely better predict danceability for unseen data and would have better explainability and interpretability.\
+Let's consider how we can interpret the coefficient estimates and their signficance. 
+Each of the predictors' p-values are below our predetermined signficance level of $\alpha = 0.01$; therefore, given all other predictors and interaction terms are held constant, each predictor in our model significantly contributes to the predictive power of the model. Aka. changes in these predictor values results in signficant changes to danceability of a song. The ANOVA table shown above confirms the signficance of the individual predictors in our final modal.\
+
+Before we evaluate this model on test data we set aside at the start, we will finally consider why certain variables were dropped out of the model during the BIC selection process. For example, if we look back to the correlation heatmap, we can see that 'hip hop' is very positively correlated with speechiness, and that energy is noteably correlated with both acousticness and loudness. You'll notice that none of 'speechiness', 'acousticness' or 'loudness' are included in the final model; these variables were likely dropped as they weren't signficant in our model (in terms of BIC) in the presense their highly correlated predictors 'hip hop' and 'energy'. One interesting observation is that 'energy' and 'valence' are positively correlated, however they are both included in the model. We suspect that both were signficant in the model because, although they are positively correlated, they are \textit{oppositely} correlated to 'danceability.'
+
+To confirm that our stepwise function deals with multicollinearity, we performed VIF test on the coefficients and found that none of values large enough to signify a large multicollinear relationship. 
+```{r, echo=FALSE}
+bothselect_BIC %>% car::vif()
+```
+As we can see that none of these VIF scores are of concerning values, indicating our stepwise model did a very good job in selecting predictors to prevent multicollinearity.
+
+
+```{r, echo=FALSE}
+stepwise_augment <- bothselect_BIC %>% augment
+stud_deleted_resid <- stepwise_augment$.std.resid
+
+# Calculate Bonferroni critical value
+n <- nrow(song_train)
+p <- length(coef(bothselect_BIC)) - 1  # Exclude the intercept
+alpha_B <- 0.01 / n
+crit_val <- qt(1 - alpha_B/2, n - p - 1)
+
+outliers <- abs(stud_deleted_resid) > crit_val
+paste0("High influence points in the y direction:",sum(outliers))
+
+leverages <- hatvalues(bothselect_BIC)
+
+
+# Identify leverage points
+leverage_cutoff  <- 3 * (p + 1) / n
+paste0("High influence points in the x direction: ", sum(leverages > leverage_cutoff))
+```
+Checking for studentized residuals as well as leverage points the presence of 0 high influence points in the y (dependent) variable but around 5 high influence points in the x (independent) variables suggests potential influential observations or non-linear relationships. By using the Bonferroni correction for outlier detection in the x direction, we are controlling the overall type I error rate, ensuring that the probability of any false positives is limited. Additionally, setting a leverage cutoff based on the number of predictors and sample size provides a standardized threshold for identifying potentially influential points in the y direction. We chose the cutoff to be 3 times the ratio of predictors to sample size due to how large our dataset is and how much variation is possible within the context of songs. Since there are a couple of potential high influence points, let's dig deeper to look at specific observations.
+
+
+```{r, echo=FALSE}
+car::influencePlot(bothselect_BIC, main = "Influence Plot for Stepwise")
+
+plot(bothselect_BIC, which = 4) 
+```
+
+As we can through the influence plots, there are 3 specific values that seem to be way greater than 3 times the average hat value.  Observations with high leverage, especially those significantly higher than the average leverage, have the potential to exert substantial influence on the estimated regression coefficients. These points are observations: 1549, 182, and 1363. If we focus on studentized residuals, we see that there are multiple studentized residuals greater than 2 or less than -2 which may cause for concern. However, since we have a large sample size, it makes sense for there to be individual extreme residual values. Since our model passes the assumptions of regression analysis, these studentized residuals might not indicate violations of these assumptions. Futhermore, when considering the effect of prediction, individual behavior of residuals may not be as concerning. Analyzing potential causual relationships between variable may need to be proceeded with extra caution due to extreme residuals. Another metric we looked at was Cook's Distance which showed that there is no Cook's distance greater than the threshold of 1. We are choosing 1 as our threshold due to our large sample size and passing of model assumptions. However, it is important to note that there is one observation, 1549, what is extremely higher than every other Cook's distance observation. Observation 1549 also has a big hate value and a large studenized residual, making it very likely this point is a concerning outlier.
+
+
+
+```{r, echo=FALSE}
+# Number of observations
+n <- nrow(song_train)
+
+# Number of predictors
+p <- length(coef(bothselect_BIC)) - 1
+
+# Calculate dfbetas
+dfbetas_values <- dfbetas(bothselect_BIC)
+
+# Calculate dffits
+dffits_values <- dffits(bothselect_BIC)
+
+# Calculate thresholds
+dfbetas_threshold <- 2/sqrt(n)
+dffits_threshold <- 2*sqrt(p/n)
+
+
+
+# Get the values for these IDs
+specific_dffits <- dffits_values[c(1549, 182, 1362)]
+specific_dfbetas <- dfbetas_values[c(1549, 182, 1362)]
+
+# Print the dffits values
+paste0("Threshold for DFFITs: ", dffits_threshold)
+print(specific_dffits)
+
+
+# Print the dfbetas values
+paste0("Threshold for DFBETAs: ", dfbetas_threshold)
+print(specific_dfbetas)
+
+
+
+```
+Looking at DFFITs and DFBETAs values for a couple of more concerning observations within our data, we can see that observation 1549 greatly exceeds both threshold while observations 182 and 1362 do not. We can conclude that 1549 is an extreme case and should be considered an outliers to remove in our model.
+
+```{r, echo=FALSE}
+song_train[1549, ]
+```
+Our outlier observatoin is "Riverside" by Sidney Samson with a danceability of 0.804. Our previous models showed that danceability and energy have generally a negative correlation with one another, yet this specific outlier has a positive correlation between the 2 variables. It makes sense that this would be an outlier, and should be removed. 
+
+```{r, echo=FALSE}
+# song_train <- song_train[-1549, ]
+```
+
+
+The model seems to perform reasonably well for the provided mean responses, with relatively narrow 95% confidence intervals indicating precise predictions. However, there is a wide 95% confidence intervals for future responses which may raise  concerns about the model's ability to make reliable and accurate predictions for new, unseen data considering `r range (song_train$danceability_square)` is the range of our predicotr variable. Such high uncertainty and low precision in future predictions could stem from various factors, including inadequate model complexity, missing important predictor variables, violations of model assumptions, overfitting or underfitting issues, or the presence of influential observations or outliers. To improve the model's overall performance and increase the precision of its predictions, it is crucial to revisit the modeling process, investigate potential issues, explore alternative modeling approaches or techniques, and validate the model's performance rigorously on a separate test or validation dataset.
+
+## Confidence Intervals
+In our study on predicting danceability in songs, we've developed a linear model and now introduce confidence intervals (CIs) to enhance the interpretation of our results. These intervals provide ranges of values within which we're confident the true mean danceability lies for both current data and future predictions. They offer insights into the precision and variability of our model's estimates, aiding stakeholders in understanding the reliability of our predictions.
+```{r, echo=FALSE}
+subset_song_test <- song_test %>%  slice(1:10)
+mean_pred_int <- predict(bothselect_BIC, subset_song_test, interval="confidence", level=0.95)
+future_pred_int <- predict(bothselect_BIC, subset_song_test, interval="prediction", level=0.95)
+
+mean_pred_int
+```
+```{r, echo=FALSE}
+future_pred_int
+```
+
+# 8. Sparse and Smooth Linear Models
+
+## Ridge Regression
+For ridge regression and LASSO, we included many continuous, categorical and interaction variables that we found were fairly significant (although not necessary below our predetermined $\alpha$ level of 0.01) during the course of building our MLR models. The continuous variables are energy, valance, speechiness, instrumentalness, tempo, liveness and duration, while the categorical variables are Dance/Electronic, hip hop, rock, pop and mode. We also considered 5 interactions variables (that are comprised of the previous variables). \
+
+## Diagnostics II
+Before we consider these model, we will proceed with some high influential/leverage points analysis as well as an VIF analysis to check for multicollineairty. Analyzing high influential/leverage points and conducting a VIF analysis is crucial because it helps ensure the reliability and robustness of our predictive model. By identifying influential data points and assessing multicollinearity among predictor variables, we can address potential issues that might affect the accuracy and generalizability of the RR and Lasso model we are trying to build as well as their predictions. 
+
+
+After creating a premodel in with all the relevant predictors, we do the same process as the evaluations for the stepwise regressionmodel. Checking for studenized residuals as well as leverage points, we found the presence of 0 high influence points in the y (dependent) variable but 38 high influence points in the x (independent) variables suggests potential influential observations or non-linear relationships.  This time, there are much more potential high influence points which makes sense due to how much more complex this premodel is compared to the previous stepwise one. Let's dig deeper to look at specific the observations of concern.
+
+```{r}
+augment <- premodel %>% augment
+#augment <- augment[-1549, ]
+stud_deleted_resid <- augment$.std.resid
+
+
+# Calculate Bonferroni critical value
+n <- nrow(song_train)
+p <- length(coef(premodel)) - 1  # Exclude the intercept
+alpha_B <- 0.01 / n
+crit_val <- qt(1 - alpha_B/2, n - p - 1)
+
+outliers <- abs(stud_deleted_resid) > crit_val
+paste0("High influence points in the y direction: ",sum(outliers))
+
+leverages <- hatvalues(premodel)
+
+# Calculate the average leverage value
+p <- length(coef(premodel)) - 1  # Number of predictors, excluding the intercept
+
+# Identify leverage points
+leverage_cutoff  <- 3 * (p + 1) / n
+paste0("High influence points in the x direction: ", sum(leverages > leverage_cutoff))
+```
+
+I sorted by cook's distance to see most influential points.
+
+```{r}
+car::influencePlot(premodel, main = "Influence Plot for Premodel")
+
+plot(premodel, which = 4)
+```
+Plotting the influence and cook's distance plots, we notice a lot more concerning data points in comparison to our stepwise model. There a bunch of more concerning leverage point(hat values) as we found above. There are a couple of outlying cook's distance observations as seen in the cook's distance plots, with the points 7 and 232 being the most extreme. Points such as 7, 141, 231, 232, 242, and 1277 were selected by the plot to have the biggest influences on our data.
+
+
+```{r}
+n <- nrow(song_train)
+
+# Number of predictors
+p <- length(coef(premodel)) - 1 
+
+leverages_df <- data.frame(row.names = rownames(song_train), SongTitle = song_train$song, Leverage = augment$.hat, Cook = augment$.cooksd, Stu_Res = augment$.std.resid )
+
+cook_df <- leverages_df %>%
+  filter(Leverage > leverage_cutoff) %>%
+  arrange(desc(Cook)) %>%
+  head(10) 
+
+ggplot(leverages_df, aes(x = Stu_Res, y = Cook, color = Leverage, label=SongTitle)) +
+  geom_point() +
+  geom_text(data = cook_df, aes(label = SongTitle), hjust = 0.5, vjust = -1, size = 2, color= "red") +
+  labs(title = "Stu_Res vs Cook's Distance",
+       x = "Stu_Res",
+       y = "Cook's Distance") +
+  theme_minimal()
+
+cook_df
+
+
+```
+Cook's distance measures the influence of each observation on the fitted values of the model. It is often the most important metric because it captures both the leverage and residual information, which is where we will putting most our attention to. According to our plot, songs like "Say it" "Suffocate - Superclean" are shown to have the highest cook's distance as long with leverage and studenized residuals on the more extreme ends. Within this dataset, those 2 may be the most important to look at. 
+
+```{r}
+dffits <- dffits(premodel)
+
+# Plot DFFITS against observation number
+plot(seq_along(dffits), dffits, main = "DFFITS Plot", xlab = "Observation Number", ylab = "DFFITS")
+
+abline(h = c(-2*sqrt(p/n), 2*sqrt(p/n)), col = "red", lty = 2)
+
+dffits_df <- data.frame(row.names = rownames(song_train), SongTitle = song_train$song,  dffits_values = dffits(premodel), dfbetas= dfbetas(premodel)[,1])
+nrow(song_train)
+length(dffits_values)
+length(dfbetas_values)
+
+dffits_threshold <- 2*sqrt(p/n)
+dfbetas_threshold <- 2/sqrt(n)
+
+dffits_extremes <- dffits_df %>%
+  filter(dffits_values > dffits_threshold | dfbetas > dfbetas_threshold  ) %>%
+  arrange(desc(dffits_values)) %>%
+  head(10)
+
+dffits_extremes
+```
+There are many valuess here that had a non-extreme Cook's distance, stutenized residuals, and leverage point values. If a value is extreme as DFFIT but not Cook's distance, it suggests that the particular observation has a significant influence on the predicted values of the model, but it may not necessarily have a large impact on the model coefficients. The observations that fall in both high cook  & leverage values and the extreme dffits values are shown below.
+
+
+```{r}
+inner_join(cook_df, dffits_extremes, by = "SongTitle")
+```
+
+Among the provided data points, "BUTTERFLY EFFECT" stands out as a potential outlier due to its high Cook's distance, standardized residual, and DFBETAS values, suggesting its substantial influence on the regression model. Although "Walking On A Dream" also exhibits notable leverage and DFFITS values, "BUTTERFLY EFFECT" appears to have a more pronounced impact based on multiple diagnostic measures, indicating its potential as an outlier. 
+
+```{r}
+data_without_outliers <- song_train[!(song_train$song %in% c("BUTTERFLY EFFECT", "Walking On A Dream")), ]
+
+# Fit linear model without potential outliers
+model_without_outliers <- lm(danceability_square ~ ., data = data_without_outliers[, c("danceability_square", predictors_interest)])
+
+bic_1 <- BIC(premodel)
+bic_2 <- BIC(model_without_outliers)
+
+print(paste("BIC for Premodel: ", bic_1))
+print(paste("BIC for Premodel without Outliers: ", bic_2))
+```
+While the 2nd model has the better BIC score, the difference is only 1. This small difference shows that these 2 outliers aren't having enough of an impact on our data for us to want to remove them from our dataset.
+
+
+```{r}
+specific_dffits <- dffits_values[c( 7, 141, 231, 232, 242, 1277)]
+specific_dfbetas <- dfbetas_values[c( 7, 141, 231, 232, 242, 1277)]
+
+# Print the dffits values
+paste0("Threshold for DFFITs: ", dffits_threshold)
+print(specific_dffits)
+
+
+# Print the dfbetas values
+paste0("Threshold for DFBETAs: ", dfbetas_threshold)
+print(specific_dfbetas)
+```
+Back to the original points that our influence plot suggested were the most concerning. We went on to find the specific values for the dffits and average dfbetas of our specific observations, but found none of them to be conclusively say passes the threshold. The 141, Champion (feat. Chris Brown), observation has an average around the dfbetas threshold, and therefore, should be looked deeper into the specific variables.
+
+```{r}
+dfbetas_values[141,]
+```
+It looks like explicit_numeric is getting affected by this specific observation, but overall, doens't seem that conclusive enough to consider it an outlier worth getting rid of.
+
+
+
+```{r, echo=FALSE}
+premodel %>% car::vif()
+```
+After doing an VIF analysis, we unfortunately see that there a couple of terms such as hip hop and DanceElectronic_tempo that show high multicollinearity. Thankfully, Lasso and RR have methods in reducing the impacts of multicollinearity through their error terms. However, one can predict that lasso will perform better with these multicollinear values due its ability to dimension reduce.
+
+Now that we have completed some important diagnostics, we will continue to the Ridge Regression.
+
+```{r, echo =FALSE}
+# Adding interaction terms of interest manually
+# song_train$energy_square_explicit_numeric <- song_train$energy_square * song_train$explicit_numeric
+# song_train$valence_explicit_numeric <- song_train$valence * song_train$explicit_numeric
+# song_train$DanceElectronic_pop <- song_train$`Dance/Electronic` * song_train$pop
+# song_train$DanceElectronic_rock <- song_train$`Dance/Electronic` * song_train$rock
+# song_train$DanceElectronic_tempo <- song_train$`Dance/Electronic` * song_train$tempo
+# song_train$hiphop_tempo <- song_train$`hip hop` * song_train$tempo
+# song_train$DanceElectronic_hiphop <- song_train$`hip hop` * song_train$`Dance/Electronic`
+# 
+# # Selecting the predictors and interaction terms
+# predictors_interest <- c("valence", "hip hop", "energy_square", "rock", "explicit_numeric", "Dance/Electronic", "pop", "mode", "log_speechiness",
+#                 "loglog_instrumentalness", "tempo", "log_liveness", "yeo_duration",
+#                 "energy_square_explicit_numeric", "valence_explicit_numeric", 
+#                 "DanceElectronic_pop", "DanceElectronic_rock", "DanceElectronic_tempo", "hiphop_tempo", "DanceElectronic_hiphop")
+
+#sum(is.na(song_train[predictors_interest]))
+
+
+rr_model <- glmnet(x_train, y_train, alpha = 0, lambda = seq(0, 100, length.out = 100))
+old_par <- par(no.readonly = TRUE)  # Save current settings to restore later
+par(mar = c(5.1, 4.1, 6, 2.1)) 
+plot(rr_model, xvar = "lambda", label = TRUE, ylim = c(-0.05, 0.1))
+title("Figure : Ridge Regression Coefficients vs Lambda")
+
+cv_rr_model <- cv.glmnet(x_train, y_train, alpha = 0)
+plot(cv_rr_model)
+best_lambda1 <- cv_rr_model$lambda.min
+abline(v = log(best_lambda1), col = "blue", lwd = 1)
+title("Ridge Regression MSE vs Lambda from Cross Validation")
+#print(best_lambda1)
+RR_best <- glmnet(x_train, y_train, alpha = 0, lambda = best_lambda1)
+
+
+```
+We can see from \textbf{Figure } that the size of the coefficients is reduced as we increase the lambda value, as expected. \textbf{Figure } shows the mean squared error for models at each lambda value (found from a 10-fold cross validation). The best lambda for the model found was quite low (show by the blue line in \textbf{Figure }), and therefore the coefficents in this model are not being regularized/reduced by much. We found this surprising as there was moderate correlation between some of the variables in the full model. We suspect that because we did significant feature transformations and normalization, the coefficients were already going to be quite small and therefore would not benefit much from being reduced further.
+
+## LASSO Regression
+```{r, echo =FALSE}
+#TRAIN
+old_par <- par(no.readonly = TRUE)  # Save current settings to restore later
+par(mar = c(5.1, 4.1, 6, 2.1)) 
+lasso_model <- glmnet(x_train, y_train, alpha = 1, lambd1 = seq(0, 1000, length.out = 1000))
+plot(lasso_model, xvar = "lambda", label = TRUE)
+title("Figure : LASSO Coefficients & Variable Selection vs. Lambda")
+
+cv_lasso_model <- cv.glmnet(x_train, y_train, alpha = 1)
+plot(cv_lasso_model)
+best_lambda2 <- cv_lasso_model$lambda.min
+abline(v = log(best_lambda1), col = "blue", lwd = 1)
+#print(best_lambda2)
+lasso_best <- glmnet(x_train, y_train, alpha = 1, lambda = best_lambda2)
+```
+As seen in \textbf{Figure }, the LASSO method is both reducing coefficient values and performing variable selection, as expected. In \textbf{Figure }, we can see the MSE of each the LASSO models with different lambda values. The best model found (with cross validation), whose log(lambda) value is shown by the blue line, shows that LASSO is performing significant variable reduction for the best model (from about 20 predictors in our model to about 10). It is clear that the regularization performed by LASSO is much more stringent that the regularization performed by Ridge Regression.
+
+
+## Comparing MLR, RR and LASSO
+```{r, echo =FALSE, warning=FALSE, error = FALSE}
+# Predictions for the MLR model
+# Predictions for the MLR model
+predictions_mlr <- predict(bothselect_BIC, newdata = song_train)
+
+# Predictions for the RRR model
+predictions_rr <- predict(RR_best, s = "lambda.min", newx = x1)  
+
+# Predictions for the Lasso model
+predictions_lasso <- predict(lasso_best, s = "lambda.min", newx = x1)
+
+
+plot_data <- data.frame(
+  Observed = song_train$danceability_square,  
+  Predicted_MLR = predictions_mlr,
+  Predicted_RR = as.vector(predictions_rr), 
+  Predicted_Lasso = as.vector(predictions_lasso) 
+)
+plot_data_long <- pivot_longer(
+  plot_data,
+  cols = c("Predicted_MLR", "Predicted_RR", "Predicted_Lasso"),
+  names_to = "Model",
+  names_prefix = "Predicted_",  # This removes the prefix automatically
+  values_to = "Predicted"
+)
+
+# Fix the Model names if necessary
+plot_data_long$Model <- gsub("_", "", plot_data_long$Model)
+
+correlations_all <- plot_data_long %>%
+  group_by(Model) %>%
+  summarize(correlation = cor(Observed, Predicted, use = "complete.obs"), .groups = 'drop')  
+
+print(correlations_all)
+
+ggplot(plot_data_long, aes(x = Observed, y = Predicted, color = Model)) +
+  geom_point(alpha = 0.2) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "longdash") +
+  scale_color_manual(values = c("blue", "red", "green")) + 
+  labs(title = "Comparison of MLR, Ridge, and Lasso Predictions",
+       x = "Observed Danceability Squared",
+       y = "Predicted Danceability Squared",
+       color = "Model") +
+  theme_minimal() 
+```
+The plot above shows the observed response value for our observations, vs the predicted response value of the observations for each of our Stepwise BIC (MLR), RR and LASSO models. As we can see from \textbf{Figure }, it appears the LASSO model's predicted values are slightly more correlated with actual observed values than the MLR model, which is also slightly more predictive than the Ridge Regression model. \\
+We suspect that the reason the Ridge Regression model is slightly less predictive than the other two models is that this method keeps too many correlated variables in the model. Similarly, we suspect LASSO makes better choices in terms of variable selection (and coefficient reduction) for multicollinearity than the stepwise BIC (MLR) model. \
+The predicted response vs observed response relationships for all three of these models are noticable flatter than the 'ideal' situation (predicted value perfectly match the observed values). These slopes suggest that are model are often giving us conservative estimatations of the predicted values. \
+Overall, we conclude that the LASSO model may be more reliable in predicting new data, however the slopes are so similar that more cross validation tests would likely need to be performed to confirm this difference. \
+
+
+# 9. Bisquare (Robust) Regression
+Since we considered a few different models and methods that all were intended for mostly dimension reduction and regularization, we wanted to consider a regression technique that is particularly robust against outliers and high leverage points. Earlier in this project, we discussed some issues in our data relating to potentially outlying points of high influence (and/or high leverage/residual) Through our research, we found that the Bisquare Regression was appropriate for this task. Furthermore, we thought that if this type of regression resulted in a large improvement compared to our previous methods, then we should reevluate the points of high influence (also high leverage and high residual points), and see if we need to perform more diagnostic measures on potentially outlying points. \
+As a form of robust regression, Bisquare Regression focuses on minimizing the impact of large residuals. Sometimes, the oridinary least squares method for choosing parameters can perform poorly on data with lots of high leverage and/or high residual points (especially at the tails). If you recall from our transformations and early diagonistics, there were heavy-tails in many of our error distrubutions (Q-Q plots) and points with high leverage and influence. An alternative to simply removing the points that are causing the prolem in our normal errors assumptions (these points may contain useful information about the true relationships), we can instead use a robust regression to find our coefficients by minimizing an "objective function" over all predictors rather than the residuals themselves. Each residual "contrubutes" to this objective function. \
+We determine how much a residual contributes to the objective function through a  $\rho(e)$ function. In OLS, this $\rho(e)$ function is simply $\rho(e) = e^2$. Now, the $\rho(e)$ function has changed, so we are no longer minimizing the sum of $e_i^2$ terms (rather $\rho(e)$ that can be various functions, but usually share some important qualities). The derivative of this function w.r.t the predictors is the influence curve. Set these partial derivaties to 0 gives us $k+1$ estimating equations for each coefficient. The weight function $w(e)$ is then the influence curve divide by the number of residuals. \
+The Bisquare Regression has a unique objective function and weight function (compared to the otherregression methods.) For example, as a residual $e$ increases in size, the objective function for OLS (given by the $\rho(e) = e^2$ contributions) will quadratically increase in size. The bisquare objective function, on the other hand, will start to level off when as $e$ increase, when $|e|>k$.We call this $k$ parameter the tuning constant, where smaller values will cause the contribution from a residual to level off sooner for larger $e$ values. In this way, we can see how bisquare regression gives the model more immunity to these large residuals (as the "contribution" to the objective function we are minimizing is not as large as in OLS). \ 
+Reference for Information: \
+\textit{Fox, John, and Sanford Weisberg. "Robust Regression." University of Minnesota, 8 Oct. 2013, http://users.stat.umn.edu/~sandy/courses/8053/handouts/robust.pdf.}
+
+In the following output, we considered two bisquare regressions on two different linear models. First, the model with the variables chosen from the full set of variables we used for Ridge Regression and the variables found Stepwise BIC Selection.
+
+```{r, echo=FALSE}
+### BISQUARE, ROBUST REGRESSION
+# bisquare_result <- rlm(danceability_square ~ valence + energy_square + log_liveness + log_speechiness + loglog_instrumentalness + tempo + yeo_duration + energy_square_explicit_numeric + valence_explicit_numeric + DanceElectronic_pop + DanceElectronic_rock + DanceElectronic_tempo + hiphop_tempo + DanceElectronic_hiphop, data = song_train, psi = psi.bisquare)
+# summary(bisquare_result)
+
+```
+
+```{r, echo=FALSE}
+#colnames(song_train)
+#print(names(song_train))
+# str(song_train$`hip hop`)
+# unique(song_train$`hip hop`)
+# sum(is.na(song_train$`hip hop`))
+
+bisqr_data <- data.frame(
+    danceability_square = song_train$danceability_square,
+    hip_hop = song_train$`hip hop`,
+    valence = song_train$valence,
+    energy_square = song_train$energy_square,  # Add more variables as needed
+    log_liveness = song_train$log_liveness,
+    log_speechiness = song_train$log_speechiness,
+    rock = song_train$rock,
+    explicit_numeric = song_train$explicit_numeric,
+    Dance_Electronic = song_train$`Dance/Electronic`,
+    pop = song_train$pop,
+    mode = song_train$mode,
+    loglog_instrumentalness = song_train$loglog_instrumentalness,
+    tempo = song_train$tempo,
+    yeo_duration = song_train$yeo_duration,
+    energy_square_explicit_numeric = song_train$energy_square_explicit_numeric,
+    valence_explicit_numeric = song_train$valence_explicit_numeric,
+    DanceElectronic_pop = song_train$DanceElectronic_pop,
+    DanceElectronic_rock = song_train$DanceElectronic_rock,
+    DanceElectronic_tempo = song_train$ DanceElectronic_tempo, 
+    hiphop_tempo = song_train$hiphop_tempo,
+    DanceElectronic_hiphop = song_train$DanceElectronic_hiphop
+)
+
+### BISQUARE, ROBUST REGRESSION 1
+bisquare_result1 <- with(bisqr_data, rlm(danceability_square ~ valence + energy_square + log_liveness + log_speechiness + loglog_instrumentalness + tempo + explicit_numeric + yeo_duration  + rock +  hip_hop + explicit_numeric + energy_square_explicit_numeric + valence_explicit_numeric + DanceElectronic_pop + DanceElectronic_rock + DanceElectronic_tempo + hiphop_tempo + DanceElectronic_hiphop, psi = psi.bisquare))
+summary(bisquare_result1)
+
+### BISQUARE, ROBUST REGRESSION 2
+bisquare_result2 <- with(bisqr_data, rlm(danceability_square ~ valence + energy_square + log_liveness + loglog_instrumentalness + tempo + explicit_numeric + yeo_duration  + rock +  hip_hop + explicit_numeric + energy_square_explicit_numeric , psi = psi.bisquare))
+summary(bisquare_result2)
+
+
+```
+The metrics for the two models found with Bisquare Regression, particularly the t-values, show that the model with fewer variables has more significant variables. We will consider how this model performs on new data later.
+
+# 10. Regression Trees
+
+Another new addition was CART (Classification and Regression Tree) model into the linear model for predicting danceability in songs is a valuable addition, as it allows for capturing potential nonlinear relationships and interactions between the predictor variables, which a linear model alone may not be able to capture effectively.
+
+Danceability is a complex characteristic influenced by various musical elements like tempo, rhythm, and energy. CART offers a powerful non-parametric method well-suited for this type of problem. Unlike linear regression which assumes linear relationships between predictors and target, CART can automatically capture non-linear patterns and intricate interactions among audio features. This flexibility makes it an attractive choice when the underlying relationships are unknown or difficult to specify upfront. It serves as an excellent comparison to the previous linear models we have created because CART requires minimal data preprocessing and feature engineering compared to linear methods. While transformations and variable selection were crucial steps for the linear models, CART can automatically handle raw features, different scales, outliers, and mixed data types without those pre-processing steps. Additionally, unlike the parametric linear models which make assumptions about the form of the relationships, CART is non-parametric and can flexibly model any non-linear and interaction effects present in the data.
+
+The way CART works is that it recursively partitions the data into subsets based on input feature values, creating a tree-like structure of decision rules. For regression tasks like predicting danceability scores, CART aims to create terminal nodes (leaves) with minimal variance in the target variable. It then uses greedy algorithms to grow this tree by selecting splits that minimize a certain metric, such as mean squared error. However, unconstrained tree growth can lead to overfitting the training data. This is where cross-validation becomes crucial. By systematically holding out parts of the data during model training, cross-validation provides an unbiased estimate of the model's predictive performance on unseen data. This estimate guides the pruning process, allowing for the selection of an optimal tree size that balances underfitting and overfitting.
+
+By comparing the predictive performance of CART to the linear, regularized, and non-linear models, it is possible to gain insight on whether predicting danceability is better approximated by additive and interactive linear components or if there are strong hierarchical interactions that tree-based methods more naturally uncover. Therefore, using CART as a comparative approach, given the extensive linear modeling efforts already undertaken, is a well-justified methodological decision.
+
+```{r}
+library(rpart)
+set.seed(21)
+# Assume `song_train` is your dataset
+formula <- danceability ~ valence + energy + liveness + speechiness + acousticness + instrumentalness  + tempo + mode + popularity  + loudness + explicit + key + duration_scale 
+
+# Fit the regression tree model
+train_control <- trainControl(method = "cv", number = 10)
+
+cv_tree_model <- train( formula,
+                    data = song_data,
+                    method = "rpart",
+                    trControl = train_control)
+
+formula2 <- danceability_square ~ valence + energy_square +  log_liveness + log_speechiness + log_acousticness + loglog_instrumentalness + yeo_duration + tempo + mode + popularity_high + popularity_low + popularity_modlow + popularity_modhigh
+cv_tree_model2 <- train( formula2,
+                    data = song_train,
+                    method = "rpart",
+                    trControl = train_control)
+
+cv_tree_model
+```
+```{r, echo=FALSE}
+cv_tree_model2
+```
+Here, we are using a 10 fold cross validation on 2 separate models: one with the transformed variables and another with the original variables from our song data. The results show that the models with the original model than a higher $R^2$ and cp are shown, even though RSME and MAE remain better for the model with transformed variables.  
+
+The higher RMSE and MAE values for the original variable model indicate it has higher overall predictive accuracy on the danceability target. These error metrics directly evaluate how close the predictions are to the actual values. So in terms of pure predictive performance, the transformed model seems preferable.
+
+However, the higher R-squared of the original variable model suggests it explains a higher percentage of the variance in the danceability scores. R-squared reflects how well the model captures the underlying patterns and relationships in the data. The complexity parameter (CP) of the 2 models is pretty similar, with the transformed variable model being slightly better. Overall, it is very clear that the original variable model outperformed the transfomred variable model.
+
+The superior performance of the untransformed CART model suggests that the danceability dynamics are potentially better represented by the hierarchical tree structure learned directly from the raw features, rather than the restricted parametric forms imposed by linear model transformations. This flexibility of CART to model complex patterns "as is" renders variable transformations unnecessary and even counterproductive in this case.
+
+The results indicating that the CART model with all the original variables intact outperformed the version using transformed variables are insightful. This outcome shows the strength tree-based approaches, their ability to naturally handle different scales, distributions and complex non-linear patterns without transforming any variables.
+
+Ultimately, both models provide valid perspectives worth considering. The results showcase how transformations can impact different performance aspects of tree models in contrasting ways.
+
+
+```{r, echo=FALSE}
+tree_model <- rpart(formula, data = song_data)
+importance <- varImp(tree_model)
+importance_df <- as.data.frame(importance)
+
+# Order the importance scores
+ordered_importance <- importance_df %>%
+  arrange(desc(Overall))
+
+print(ordered_importance)
+```
+
+An important output from CART models is the measure of variable importance, which quantifies each predictor's contribution to the overall variance explained by the tree. Variables towards the top split nodes carry more weight, while lower rankings imply lesser contributions after accounting for the other predictors. The relatively high importance value of 0.80 for tempo indicates it was the most influential variable in constructing the regression tree to predict danceability scores. This aligns with intuition as people tend to dance more to song with higher speeds and tempos. Energy, speechiness, and valence are also shown to be significant factors which again, makes sense to its correlation to danceability.
+
+
+```{r, echo=FALSE}
+library(rpart.plot)
+# Plot the regression tree
+rpart.plot(tree_model)
+```
+
+Finally, here is the regression tree visualized. For each leaf node displays the mean predicted target value for that subset of observations. The tree diagram includes root nodes, internal split nodes, and terminal leaf nodes which provides an intuitive representation of how different predictor variables interact to partition the data into distinct subgroups.
+
+
+# 11. Smoothing Models with Tempo
+```{r, echo=FALSE}
+
+plot(encoded_data$tempo, encoded_data$danceability, main="Figure : Danceability vs Tempo", xlab="Tempo", ylab="Danceabilit")
+abline(v = c(90, 100, 110, 120, 130, 140, 150, 160, 170), col = "red", lty = "dashed")
+
+plot(encoded_data$tempo, encoded_data$danceability_square, main="Figure : Danceability Squared vs Tempo", xlab="Tempo", ylab="Danceability Squared")
+abline(v = c(90, 100, 110, 120, 130, 140, 150, 160, 170), col = "red", lty = "dashed")
+
+# Create histogram using ggplot2
+ggplot(encoded_data, aes(x = tempo)) +
+  geom_histogram(binwidth = 2, color = "black", fill = "blue") + # Adjust binwidth as necessary
+  ggtitle("Figure : Histogram of Tempo") +
+  xlab("Tempo (BPM)") +
+  ylab("Frequency") +
+  theme_minimal() +
+  geom_vline(xintercept = 90, color = "red", linetype = "dashed", size = 1/2) +
+  geom_vline(xintercept = 100, color = "red", linetype = "dashed", size = 1/2) +
+  geom_vline(xintercept = 110, color = "red", linetype = "dashed", size = 1/2) +
+  geom_vline(xintercept = 120, color = "red", linetype = "dashed", size = 1/2) +
+  geom_vline(xintercept = 130, color = "red", linetype = "dashed", size = 1/2) +
+  geom_vline(xintercept = 140, color = "red", linetype = "dashed", size = 1/2) +
+  geom_vline(xintercept = 150, color = "red", linetype = "dashed", size = 1/2) +
+  geom_vline(xintercept = 160, color = "red", linetype = "dashed", size = 1/2) + 
+  geom_vline(xintercept = 160, color = "red", linetype = "dashed", size = 1/2) 
+```
+As we can see from \textbf{Figure } and \textbf{Figure } above, tempo has a somewhat strange relationship with dancebility (and danceability^2); its relationship to danceability looks slightly quadtratic, although slightly less so when we transform the response (as we did before). Also, note that quadtraic transformations on the tempo predictor did not improve its assumptions on the normal errors model. Futhermore, our domain knowledge tells us that tempo is a bit of a unique variable. In 4/4 time signature (which the vast majority of popular songs are in), a 100bpm song can sound very similar in "speed" or "groove" to a 200bpm song, as the speed of the song is relative to how many beats/sounds are actually played a second. Therefore, given the unique properties of 'tempo', we believe it is a good canditate to use the smoothing techniques on.
+From our domain knowledge, we also know that tempos like 90-170 are very common in popular and danceable songs (while song outside these ranges are generally unique and deserve their own range, or have a similar groove if you divide or multiple them by 2 to one of the section in 90-170). From this knowledge, and from our observations of the plots above, we determined (a maximum of) nine ranges of interest that were  appropriate for the following smoothing methods. In the plots above, you will see red lines indicating the knot tempos for these ranges. 
+
+## Spline Models
+For the smoothing splines, we considered six models with 4, 5, 6, 7, 8, 9 knots respectively. Since we are not doing linear regression anymore (on the entire tempo data, rather on individual sections of the data), the individual linear models are a simple, univariate linear models (we are not transforming the response as we did prior): \
+(show) \
+Consider the stepwise linear plots below for the five spline model:
+```{r, echo=FALSE}
+library(splines)
+
+# so we don't augment actual training data w/ unncessary variables
+train_spline <- song_train
+
+#Lists
+knotsList <- list(
+  c(100, 120, 130, 160),
+  c(100, 110, 120, 130, 160),
+  c(100, 110, 120, 130, 140, 160),
+  c(90, 100, 110, 120, 130, 140, 160),
+  c(90, 100, 110, 120, 130, 140, 150, 170),
+  c(90, 100, 110, 120, 130, 140, 150, 160, 170)
+)
+tidy_env <- new.env()
+
+spline_models <- lapply(knotsList, function(knots, env) {
+  spline_basis <- bs(train_spline$tempo, knots = knots, degree = 1)
+  model <- lm(danceability ~ spline_basis, data = train_spline)
+  
+    tidy_output <- tidy(model, conf.int = TRUE)
+    env[[paste("Spline Model with Knots:", paste(knots, collapse = ", "))]] <- tidy_output
+    #print(tidy_output)
+    
+  model_output <- augment(model, se_fit = TRUE) %>% 
+    mutate(
+      tempo = train_spline$tempo, 
+      danceability = train_spline$danceability,
+      upper = .fitted + 2 * .se.fit,
+      lower = .fitted - 2 * .se.fit,
+      model = paste("Tempos: ", paste(knots, collapse = ", "))
+    ) %>% 
+    dplyr::select(tempo, danceability, .fitted, upper, lower, model)
+    return(model_output)
+}, env = tidy_env)
+
+spline_full <- bind_rows(spline_models)
+unique_models <- unique(spline_full$model)
+
+for (model_name in unique_models) {
+  model_data <- spline_full %>% filter(model == model_name)
+  p <- ggplot(model_data, aes(x = tempo, y = danceability)) +
+    geom_point(alpha = 0.2, color = "black") +
+    geom_line(aes(y = .fitted, color = model), size = 0.75) +
+    geom_line(aes(y = upper, color = model), lty = 3) + 
+    geom_line(aes(y = lower, color = model), lty = 3) + 
+    geom_ribbon(aes(ymin = lower, ymax = upper, fill = model), alpha = 0.1) +
+    ggtitle(paste("Spline Fit with", model_name)) +
+    theme_minimal() +
+    theme(legend.position = "none")
+  print(p)
+}
+
+```
+\
+Below, consider the individual metrics for each of the splines bases in the spline models above. \
+```{r, echo=FALSE}
+env_contents <- ls(env = tidy_env)
+print("Order of Output: ")
+for (name in env_contents) {
+  cat("Metrics for", name, "\n")
+  print(tidy_env[[name]])
+}
+```
+In the spline models above, we can see how adding more knots makes the stepwise function found more complicated, and change the significance of certain ranges. When considering which of these spline models is likely best at prediction, we considered balancing a few different criteria: the ability interpolate for a large range of tempos, a model that has a significant coefficents for its bases, and a model that likely won't overfit the test data while still capturing the complexities of this relationship. \
+Every spline model we considered did not have a significant slope (a p-value under $\alpha = 0.01$) for the spline basis for the highest tempos. The model with 10 knots had three sections whose p-values were not below $\alpha = 0.01$ (also for the largest tempos) and two sections for 8 and 9 knots models had p-value not below $\alpha$ . For this reason, we did not consider these models for the best (also their significant levels for the coefficients and intercept of the bases were generally lower). \ 
+The models with 4, 5 and 6 knots only had one section with whose relationship to danceability was not significant; again, this was the spline basis with the highest tempos. Of these model, we chose the spline models with 5 and 6 knots to be the best. Given our domain knowledge, we thought the tempo ranges represented by these knots actually have unique relationships with danceability (and this is confirmed by \textbf{Figure }. We believe this is a good compromise between modeling the complexities of this relationship, while still being general enough to accurate model unseen data.
+As stated previously, the last basis for every spline model did not have p-values that were below our signficant level. We suspect that the relationship between danceability and tempo is not linear within larger tempo ranges ($\geq$ 160). Therefore, an area to consider for further exploration is to fit the last tempo section with more  variables or some transformation of the tempo or danceability. For the sake of brevity, will not consider these additions now. \
+In summary, we believe the 5 and 6 knot spline models, given the metrics previously discuseed, would be the best for predicting new songs' danceability and we believe we can predict danceability in tempo ranges [min, 160] without extrapolating. Later, we will consider which of these models we consider to be better.
+
+## LOESS Models
+For the LOESS models, we considered four models with spans of 5%, 10%, 20% and 25%. 
+```{r, echo=FALSE, error = FALSE, messages = FALSE, warning=FALSE}
+loess_full = data.frame()
+
+for (i in c(0.05, 0.1, 0.2, .25)) {
+  
+  loess1 <- loess(danceability ~ tempo, 
+                     span = i,
+                     data = train_spline)
+
+loess1_output <- loess1 %>% 
+  augment(se_fit = TRUE) %>% 
+  bind_cols(train_spline) %>%
+  rename(danceability = danceability...1,  tempo =  tempo...2) %>%
+  mutate(upper = .fitted + 2*.se.fit,
+         lower = .fitted - 2*.se.fit) %>%
+  mutate(span = i) %>%
+  dplyr::select(danceability, tempo, .fitted, upper, lower, span)
+
+  loess_full <- loess_full%>% bind_rows(loess1_output)
+}
+
+  loess_full %>%
+  ggplot(aes(x = tempo, y = danceability)) + 
+  geom_point(alpha = .2) + 
+  geom_line(aes(y = .fitted), color = "red") + 
+  geom_line(aes(y = upper), lty = 3, color = "red") + 
+  geom_line(aes(y = lower), lty = 3, color = "red") + 
+  facet_wrap(~span) + 
+  ggtitle("Figure : Loess Fits for Various Spans")
+  
+```
+As we can see from the Loess fit figures above, as the span increases the model becomes smoother as each observation considers more neighbors to determine their fitted value. We determined that the %5 span model was clearly overfitting the training data. In the range of 120-130 BPM (tempo), the fitted values change wildly. We don't actually expect there to be much of a difference between the danceability songs with 133BPM tempo versus a song with 135 tempo, for example. Similarly, as most evident by the function slopes in the range 120-130, we believe the 10% span model is also capturing relationships that are not general (overfitting the training data). \
+The 20% and 35% span model are much smoother, and for that reason, we believe these models would be better at predicting new data. We also determined that the 25% span model may perform better at predicting new songs' danceability than the 20% span model. Again, although less severe than for the 5% and 10% span model, we still think that the 20% model is capture some changes in the relationship between danceability and tempo that wouldn't generalize well given our domain knowledge. \
+From the figure above, the 25% model appears to have three main "peaks" of danceability in relation to tempo: around tempos 100BPM, 120PM and 130BPM. 
+
+## Comparing all Smoothing Models
+Below you will see all the spline and LOESS models on two plots. \
+```{r, echo=FALSE}
+
+# Combine spline and LOESS data
+combined_models <- bind_rows(
+  spline_full %>% dplyr::select(tempo, danceability, .fitted, upper, lower, model),
+  loess_full %>% mutate(model = paste("LOESS span =", span)) %>% 
+                 dplyr::select(tempo, danceability, .fitted, upper, lower, model))
+
+  #spline_plot_data <- combined_models %>%
+  #filter(grepl("Spline", model))
+  
+  spline_plot_data <- spline_full
+
+  loess_plot_data <- combined_models %>%
+  filter(grepl("LOESS", model))
+
+  # Create the Spline plot
+spline_plot <- ggplot(spline_plot_data, aes(x = tempo, y = danceability)) + 
+  geom_line(aes(y = .fitted, color = model), size = 1/4) +
+  geom_point(alpha = 0.03, color = "black") + 
+  ggtitle("Spline Models Comparison") +
+  theme_minimal() +
+  #labs(color = "Spline Model") +
+  guides(color = guide_legend(nrow= 6, bycol = TRUE)) +
+  theme(legend.position = "right",  legend.justification= "left", legend.box.just = "left", legend.text = element_text(size = 5))
+
+# Create the LOESS plot
+loess_plot <- ggplot(loess_plot_data, aes(x = tempo, y = danceability)) + 
+  geom_line(aes(y = .fitted, color = model), size = 1/2) +
+  geom_point(alpha = 0.03, color = "black") + 
+  ggtitle("LOESS Models Comparison") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  #labs(color = "LOESS Model") +
+  guides(color = guide_legend(nrow = 4, bycol = TRUE)  ) +
+  theme(legend.position = "right", legend.text = element_text(size = 8))
+
+   spline_plot
+   loess_plot
+
+  # COMBINED PLOT
+  # ggplot(combined_models, aes(x = tempo, y = danceability_square)) + 
+  # geom_line(aes(y = .fitted, color = model)) +
+  #   geom_point(alpha = 0.025, color = "black") + 
+  # ggtitle("Figure : Combined Comparison of Spline and LOESS Models") +
+  # theme_minimal() +
+  # theme(legend.position = "bottom")
+  
+
+```
+Now that we have considered which of the spline models and which of the LOESS models we believe is best (the 5 and 6 knot spline models and the 25% LOESS model), let's consider which of these models is best. We first determined  that a spline model would work better to modeling the relationship between danceability and tempo than a LOESS model. Our reasoning is, first that we believe that the relationships between dancebility is genuinely linear for many tempo ranges (and the metric founds for the spline bases confirm that). Second, we know that music producers, if they have a dance song an the intention, will often specifically choose a tempo or range of tempo to achieve this. Furthermore, certain types of vocal performances (some of them more conducive to dance music) are easier to perform  Therefore, we this domain knowledge in mind, we expect that there are some real, abrupt changes in the relationship between tempo and danceability; the spline model captures these abrupt changes at certain partitions better than LOESS (which smooths outs these changes). \
+We should note that one apparant advantage to the LOESS models is that they capture the non-linear relationship for the fast tempos, which the splines models could not. However, this could also be seen as a disdvantage for the very slow tempos. We see the same convex, quadratic relationship for the slower tempos as we do for the very fast tempos. Although our domain knowledge tells us this type of relationship may make sense for the fast tempos, it doesn't really make sense for the slow tempos. Aka. would you really see a sudden rise in danceability for very slow songs vs moderately slow song? Or, is the LOESS model simply being swayed by the small cluster of medium-danceable nodes at the very slow tempos (which could just be a unique feature of our data set or training data). Looking into the exact relationship between danceability and tempo at these slow tempos, and considering the specifics of those very slow, but danceable songs, would be a good area of exploration. However, our intuition and domain knowledge tell us that this sudden rise in predicted danceability at the very slow tempos is likely not indicitive of the true relationship at these tempos. We believe the linear relationships modeled by the spline bases at these tempos are more suitable. For all the reasons above, we believe the a spline model is more suitable to model this relationship.
+As for choosing between the 5 and 6 knot spline model, if we look at the \textbf{Figure }, we can see that, even with more than 3-4 knots, the stepwise functions only show about 4-5 significantly different slope areas. Therefore, we expect that one of the knots for the 6 knot model is unnecessary (specifially the 140BPM knot) as the relationships between tempo and danceability in the bases straddling this knot (aka. ranges [130, 140] and [140,160]) are roughly the same. \
+
+In summary, out of all the smoothing models, we determined that the 5 knot model would be the best model at predicting new observations. We determined this by considering the unique properties of tempo, our ability to interpolate for a large range of tempos, and balancing the desire not to overfit while also capturing the complexities of this relationship. Some futher area of exploration is finding a better, non-linear, and/or mulit-variate model to predict the danceability of very fast tempos (which our best chosen model couldn't capture well with a univariate linear model) and looking deeper into the very slow, but danceable, songs to see if a linear relationship at these tempos is truly appropriate.
+
+# Summary
+
+Within this project, our study aimed to find the the factors that influence the "danceability" of a song from a combination of audio features within the song, its popularity, genre, and other characteristics. We hope our findings will help musical artists and composers have a better understanding on "danceability" and its connection to the music world. 
+
+We aimed to create a valuable statistical model danceability as our main variable. Our first step in the process was preprocessing, which included feature engineering, transforming certain variables to fit the assumptions of the normal errors models, and checking for multicollinearity and high influence/leverage point. When it came to building our model, we employed stepwise selection models with f-tests to find the optimal variables to use for our model. 
+
+We found that the Forward Selected Stepwise BIC exhibited a better adjusted $R^2$, AIC, and BIC metrics, as well significant p-values to variable coefficients, indicating better suitability to predict/interpret danceability. Our final model indicates variables like valence, instrumentalness, and genre selection proved valuable positive effects on danceability while energy and tempo showed negative effects.
+
+Further exploration could include the consideration of other model selection techniques such as Lasso or Ridge regression in order to select important predictors for our model better. We could also include a more deeper analysis on the effect of multicollinearity and potential outliers. We may also explore different shrinkage and smoothing methods. Overall, our current model can be seem as valuable for now based on the accuracy of our model and the precaution taken to prevent overfitting and overcomplexity.

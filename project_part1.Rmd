@@ -1,0 +1,245 @@
+---
+title: "Math 158 Project Part 1"
+author: "Haram Yoon and Shane Foster Smith"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+library(dplyr)
+library(ggplot2)
+library(skimr)
+
+```
+ 
+## Data Description & Descriptive Statistics
+
+
+```{r}
+# Load tidyverse for data wrangling
+library(tidyverse) 
+
+# Read in song data
+song_data <- read_csv("songs_normalize.csv")
+```
+
+### Introduction
+
+###### Dataset: Paradisejoy. (n.d.). Top Hits Spotify from 2000-2019. Kaggle. Retrived from https://www.kaggle.com/datasets/paradisejoy/top-hits-spotify-from-20002019
+
+The Spotify songs dataset contains various audio features and metadata on over 2000 popular tracks on the platform from 2000 to 2019. In examining what makes certain songs more popular than others, we have a mix of categorical variables like genre as well as quantitative features related to the musical composition.
+
+
+There are `r nrow(song_data)` tracks in the dataset spanning `r length(unique(song_data$year))` years from `r range(song_data$year)[1]` to `r range(song_data$year)[2]`.
+
+Observational Unit:
+ 
+- *Popularity*: A quantitative value from 0 to 100 based on the song's popularity.
+
+Some key categorical predictors:
+
+- **genre**: The musical genre category. We may find certain genres tend to contain more popular hits. 
+
+- **artist**: The artist name. Some artists have more fans and influence driving higher popularity.
+
+- **key**: The musical key which could have cultural popularity biases.
+
+- **explicit**: Explicity within songs could be factor in a song's popularity.
+
+- **mode**: Indicates whether the song has been derived from a major or minor scale (for example, song can be in C major or C minor).
+
+Some key quantitative predictors:   
+
+- **durationms**: To measure the track length in milliseconds. Longer tracks represent more content but may negatively impact repetition/memorability.
+
+- **danceability**: A measure of how suitable the song is dancing based on musical elements. Upbeat danceable songs may achieve greater popularity.
+
+- **energy**: Represents the intensity and activity of a song. Higher energy songs promoting movement may achieve greater public response.
+
+- **loudness**: The overall loudness of a track in decibels. Louder songs may spark greater initial interest.  
+
+- **acousticness**: Confidence the song is acoustic. Potential cultural popularity differences between acoustic and electric musical styles.
+
+- **speechiness**: Presence of spoken words. Ranges from talk-based to no speech. Helps categorize tracks like audiobooks or rap music that blend speech.
+
+- **liveness**: Detects the presence of an audience in the recording. Higher liveness values represent an increased probability that the track was performed live. Songs recorded in a live setting may have a unique appeal and authenticity, potentially influencing the popularity. Audiences often enjoy the raw energy and connection associated with live performances, which could contribute positively to a song's overall popularity.
+
+- **valence**: A measure from 0.0 to 1.0 describing the musical positiveness conveyed by a track. Tracks with high valence sound more positive (e.g., happy, cheerful, euphoric), while tracks with low valence sound more negative (e.g., sad, depressed, angry). The emotional tone of a song, as captured by valence, can strongly impact its popularity. Positive and uplifting songs might resonate more with a broader audience, leading to higher popularity.
+
+- **tempo**: The overall estimated tempo of a track in beats per minute (BPM). In musical terminology, tempo is the speed or pace of a given piece. The tempo of a song can influence its perceived energy and danceability. Faster tempos may contribute to a more energetic and lively feel, potentially attracting a larger audience, especially in certain genres. Understanding the tempo of a song can provide insights into its stylistic characteristics, which may, in turn, affect its popularity.
+
+
+The goal is to analyze how these categorical factors and quantitative audio attributes relate to and potentially predict the **popularity** score of a track on Spotify. This can reveal musical qualities that make songs resonate most widely. Examining across genres can also uncover cultural tastes.
+
+
+## Data Overview
+
+
+The data preprocessing step focuses on songs with a popularity level higher than 5, potentially narrowing down the dataset to more popular songs. The removal of rows with missing values ensures a cleaner dataset for subsequent analysis, allowing you to gain insights or build models based on a subset of the data that meets specific popularity and completeness criteria.
+```{r}
+
+songs_filtered <- song_data %>% 
+  filter(popularity > 5) %>%
+  na.omit()
+glimpse(songs_filtered)
+```
+
+
+
+## Summary Statistics
+```{r}
+skim(songs_filtered)
+```
+```{r}
+summary(songs_filtered$popularity)
+```
+These are the statistics for our observational variable, popularity.
+
+# Visualizations
+
+
+##### These visualizations help give insight into our dataset and set us up for when we want to find ways to predict popularity within songs.
+
+```{r top-genres-plot, fig.width=12, fig.height=6}
+song_data %>% 
+  separate_rows(genre, sep = ",\\s*") %>%
+  filter(genre != "set()") %>%
+  count(genre) %>%
+  slice_max(n, n = 12) %>%
+  ggplot(aes(x = fct_reorder(genre, n), y = n)) +
+  geom_col() +
+  labs(
+    title = "Top Genres",
+    x = "Genre",
+    y = "Count"
+  )
+
+```
+
+This plot shows the popularity/count of each of the genres. In our data, a song my be included in more than one genre. For example, a song my be included considered both rock and pop. Therefore, in this plot, if a song is included in more than one category, let's say, for example, rock and pop, then this song would be included in count of both the rock and pop. These genres can help us visualize the proportion of genres of music that have been considered popular in the past two decades.
+
+
+
+```{r}
+ggplot(songs_filtered, aes(x = popularity)) +
+  geom_histogram(bins = 30, color="white", alpha = 0.6, aes(y = ..density..)) + 
+  geom_density(alpha = 0.6, linewidth = 1.2) +
+  labs(title = " Popularity Distribution with Density Curve",  
+       x = "Popularity",
+       y = "Density") +
+  theme_minimal() + 
+  theme(plot.title = element_text(size = 16),
+        axis.title = element_text(size = 14)) +
+  geom_vline(xintercept = mean(song_data$popularity), 
+             color = "red", linetype = "dashed",
+             size = 1,
+             mapping = aes(xintercept = mean(popularity)))
+```
+
+This plot shows the distrubution of (scaled) popularity for the songs in our dataset. The red dash represents the overall mean of the distribution, 65. The popularity values within our distribution are centered mostly around 50 through 75. 
+
+```{r}
+ggplot(songs_filtered, aes(x = valence, y = popularity)) +
+  geom_point(alpha = 0.4, color = "red") + 
+  geom_smooth(method = "lm", color = "blue") +
+  labs(
+    title = "Popularity vs Valence",
+    x = "Valence",
+    y = "Popularity"
+  ) +
+  theme_bw()
+```
+
+This plots shows popularility of song as a function of valence (which measures the "postiveness" conveyed by the track.) From observation of the plot, there doesn't appear to be a strong linear trend in one direction or another (although the linear fit is slightly negative in the plot).
+
+```{r}
+ggplot(songs_filtered, aes(x = danceability, y = popularity)) +
+  geom_point(alpha = 0.4, color = "red") + 
+  geom_smooth(method = "lm", color = "blue") +
+  labs(
+    title = "Popularity vs Dancability",
+    x = "Danceability",
+    y = "Popularity"
+  ) +
+  theme_bw()
+```
+
+This plots shows popularity of song as a function of dancibility. From observation of the plot, there doesn't appear to be a strong linear trend in one direction or another.
+
+
+```{r}
+ggplot(songs_filtered, aes(x = duration_ms/1000/60)) +
+  geom_histogram(bins = 30, color="white", alpha = 0.6, aes(y = ..density..)) + 
+  geom_density(alpha = 0.6, linewidth = 1.2) +
+  labs(title = "Songs Duration Distribution with Density Curve",  
+       x = "Duration (Minutes)",
+       y = "Density") +
+  theme_minimal() + 
+  theme(plot.title = element_text(size = 16),
+        axis.title = element_text(size = 14)) +
+  geom_vline(xintercept = mean(song_data$duration_ms/1000/60), 
+             color = "red", linetype = "dashed",
+             size = 1,
+             mapping = aes(xintercept = mean(duration_ms/1000/60)))
+```
+\
+This plot shows the distribution of song duration in minutes for the songs in our dataset. As can be seen above, the songs in our dataset have a mean duration of just under 4 minutes. This can be used to analyzed to see if longer or shorter songs tend to cause more popularity.
+
+
+```{r}
+# Create correlation matrix
+
+library(viridis)
+cor_mat <- cor(songs_filtered %>% 
+                select_if(is.numeric))
+
+# Use reshape2 to melt the matrix
+library(reshape2)
+melted_cor <- melt(cor_mat) 
+
+# Plot heatmap
+ggplot(data = melted_cor, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_viridis() +
+  theme(axis.text.x = element_text(angle = 90)) +
+  labs(
+    title="Correlation Heatmap",
+    x = "Variable 1",
+    y = "Variable 2"
+  ) 
+```
+
+This plot shows the correlation between each variable in our dataset (as a matrix heatmap). The darker colors show negative correlation while the warmer colors (more yellow) show more positive correlation. For example, from the plot above we can see that acoustiness and energy have a negative correlation, while loudness and energy have a positive correlation (both of which are intuitive). Another interesting observation is that the release year is negatively correlated with duration, which indicates that songs have been getting shorter in recent times.
+
+```{r}
+m2 <- lm(formula = popularity ~ danceability + 
+          energy + loudness + acousticness + mode +  
+          speechiness + liveness  + valence + tempo +
+          duration_ms, data = songs_filtered)
+
+par(mfrow=c(2,2)) 
+plot(m2)
+```
+\
+In the Residuals vs Fitted plot, we can see that the variance does not increase or decrease in one direction of the other, however there does appear to be more variance in the middle ranges. Therefore, a transformation of the explanatory variable may be necessary. As for the assumption of linearity, this plot appears to be fairly linear.\
+In the Normal Q-Q Plot, we see some deviation from normality, especially at the tails. This result indicates that our data has heavy tails or potential outliers. We may need to consider transformations of the response or explanatory variable. \
+The Scale-Location plot generally shows more varibility in the residuals in the middle values, which may indicate a violation of our assumption of constant variance of errors. Therefore, we may need to consider a transformation of the explanatory variable. \
+Finally, the Residuals vs Leverage plot, which helps us identify influential/disproportionate observations in our model, shows more variance of the residuals on the left. This suggests that observations with lower leverage show more variability. Furthermore, there aren't many observation on the right side of our plot, indicating there few very points that are (individually) highly influential on our regression model. These observations merit more analysis. \
+
+
+## Insights
+The data was somewhat surprising in terms of how spread out it was. The plots did not show clear linear associations and there were a lot of residuals. However, the sampling itself went well - with 2,000 different data points spanning popular songs from the past two decades, we likely got a fair representation of worldwide music popularity trends in that timeframe.
+
+
+A few caveats around how representative the sample is: the data does not include songs from the most recent 5 years, so very current trends are missing. Additionally, we don't know exactly how the "popularity" statistic was measured. There could also be shifting trends over time as what is popular changes year to year. But with 2,000 songs across multiple decades, many of those temporal effects should be smoothed out.
+
+Overall, while surprising in some regards, the wide sampling over an extended retrospective time period should provide a reasonable snapshot of historically popular music. Factors like recency and the vagueness of the popularity metric likely impact the data, but not enough to undermine how representative the 2000 song sample is of the last 20 years. The key time-related factor is that very current trends are omitted given the data ends 5 years ago.
+
+
+
+
+
